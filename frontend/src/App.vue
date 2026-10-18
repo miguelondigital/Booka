@@ -1,12 +1,14 @@
 <script setup lang="ts">
-// import {ref} from 'vue'
-import headerComponent from './components/headerComponent.vue';
+import { storeToRefs } from 'pinia'
+import AppHeader from './components/AppHeader.vue'
+import { useClubStore } from './stores/club'
 
+const { club, dataSource, status } = storeToRefs(useClubStore())
 </script>
 
 <template>
-    <headerComponent></headerComponent>
-    
+  <AppHeader :club-name="club?.name" :data-source="status === 'ready' ? dataSource : undefined" />
+  <main>
+    <RouterView />
+  </main>
 </template>
-
-<style scoped></style>

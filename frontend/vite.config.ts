@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url'
 
 import { defineConfig } from 'vite'
@@ -6,22 +7,25 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [
-    vue(),
-    vueDevTools(),
-  ],
+  plugins: [vue(), vueDevTools()],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // Types, fixtures and the visibility rule shared with the Express API.
+      '@shared': fileURLToPath(new URL('../shared', import.meta.url)),
     },
   },
-  server:{
+  server: {
+    port: 5173,
     proxy: {
-      '/api':{
-        target: 'http://localhost:5000', // Backend server
-        changeOrigin: true, // Ensure request appears to come from the frontend server
-        rewrite: (path) => path.replace(/^\/api/, ''), // Removes '/api' prefix
-      }
-    }
+      // Express serves every route under /api on port 3000 during development.
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
+  },
+  test: {
+    environment: 'node',
   },
 })

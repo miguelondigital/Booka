@@ -1,16 +1,19 @@
-// Importing module
-import express from 'express';
+import './env.js'
+import { createApp } from './app.js'
+import { loadConfig } from './config.js'
+import { disconnectPrisma } from './db/client.js'
 
-const app = express();
-const PORT:Number=3000;
+const config = loadConfig()
+const app = createApp(config)
 
-// Handling GET / Request
-app.get('/', (req, res) => {
-    res.send('Welcome to typescript backend!');
+const server = app.listen(config.port, () => {
+  console.log(
+    `Booka API listening on http://localhost:${config.port} (DATA_SOURCE=${config.dataSource})`,
+  )
 })
 
-// Server setup
-app.listen(PORT,() => {
-    console.log('The application is listening '
-          + 'on port http://localhost/'+PORT);
-})
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    server.close(() => void disconnectPrisma().finally(() => process.exit(0)))
+  })
+}

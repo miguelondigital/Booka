@@ -1,0 +1,112 @@
+// Booka MVP data model: one club, one active book, ordered checkpoints,
+// member progress, and checkpoint-stamped threads and replies.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../backend/src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Club {
+  id           String       @id @default(cuid())
+  name         String
+  // Club 1-to-1 active Book.
+  activeBookId String       @unique
+  activeBook   Book         @relation(fields: [activeBookId], references: [id])
+  memberships  Membership[]
+  threads      Thread[]
+  createdAt    DateTime     @default(now())
+}
+
+model Book {
+  id          String       @id @default(cuid())
+  title       String
+  author      String
+  club        Club?
+  checkpoints Checkpoint[]
+  progress    Progress[]
+}
+
+model Checkpoint {
+  id       String     @id @default(cuid())
+  bookId   String
+  book     Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  // 0-based reading order. Visibility compares these indexes.
+  index    Int
+  label    String
+  progress Progress[]
+  threads  Thread[]
+  posts    Post[]
+
+  @@unique([bookId, index])
+}
+
+model Member {
+  id          String       @id @default(cuid())
+  name        String
+  memberships Membership[]
+  progress    Progress[]
+  threads     Thread[]
+  posts       Post[]
+}
+
+// Member-to-Club through membership.
+model Membership {
+  memberId String
+  member   Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  clubId   String
+  club     Club     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@id([memberId, clubId])
+}
+
+// Member-to-Book through progress: the member's current checkpoint.
+model Progress {
+  memberId     String
+  member       Member     @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  bookId       String
+  book         Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  checkpointId String
+  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id])
+  updatedAt    DateTime   @updatedAt
+
+  @@id([memberId, bookId])
+}
+
+// A thread's checkpoint is stamped from the author's progress at creation.
+model Thread {
+  id           String     @id @default(cuid())
+  clubId       String
+  club         Club       @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  checkpointId String
+  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id])
+  authorId     String
+  author       Member     @relation(fields: [authorId], references: [id])
+  title        String
+  body         String
+  createdAt    DateTime   @default(now())
+  posts        Post[]
+
+  @@index([clubId])
+}
+
+// A reply inside a thread, stamped from the author's progress at creation.
+model Post {
+  id           String     @id @default(cuid())
+  threadId     String
+  thread       Thread     @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  checkpointId String
+  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id])
+  authorId     String
+  author       Member     @relation(fields: [authorId], references: [id])
+  body         String
+  createdAt    DateTime   @default(now())
+
+  @@index([threadId])
+}

@@ -1,0 +1,26 @@
+# Render Blueprint: one Node web service + one managed PostgreSQL database.
+# See README.md → "Hosting on Render" for the step-by-step guide.
+databases:
+  - name: booka-db
+    databaseName: booka
+    plan: free
+
+services:
+  - type: web
+    name: booka
+    runtime: node
+    # Pre-deploy commands require a paid instance type. On the free type, remove
+    # preDeployCommand and use this build command instead:
+    #   npm ci && npm run build && npx prisma migrate deploy
+    plan: starter
+    buildCommand: npm ci && npm run build
+    preDeployCommand: npx prisma migrate deploy
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATA_SOURCE
+        value: db
+      - key: DATABASE_URL
+        fromDatabase:
+          name: booka-db
+          property: connectionString
