@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import type { DataSource } from '@shared/types'
+import { RouterLink } from 'vue-router'
+import type { Account } from '@shared/types'
+import MemberAvatar from './MemberAvatar.vue'
 
-defineProps<{ clubName?: string | undefined; dataSource?: DataSource | undefined }>()
+defineProps<{ account?: Account | null | undefined }>()
+const emit = defineEmits<{ logout: [] }>()
 </script>
 
 <template>
   <header class="header">
     <div class="header__inner">
-      <div class="brand">
+      <RouterLink :to="{ name: 'home' }" class="brand" aria-label="Booka home">
         <span class="brand__mark" aria-hidden="true">
           <svg
             viewBox="0 0 24 24"
@@ -26,21 +29,16 @@ defineProps<{ clubName?: string | undefined; dataSource?: DataSource | undefined
           </svg>
         </span>
         <span class="brand__name">Booka</span>
-        <span v-if="clubName" class="brand__club">{{ clubName }}</span>
+      </RouterLink>
+      <div v-if="account" class="account">
+        <RouterLink :to="{ name: 'account' }" class="account__link" title="Your account">
+          <MemberAvatar :member-id="account.id" :name="account.name" />
+          <span class="account__name">{{ account.name }}</span>
+        </RouterLink>
+        <button type="button" class="btn btn-quiet account__logout" @click="emit('logout')">
+          Sign out
+        </button>
       </div>
-      <span
-        v-if="dataSource"
-        class="mode"
-        :class="`mode--${dataSource}`"
-        :title="
-          dataSource === 'demo'
-            ? 'Demo mode: progress and new posts are saved in this browser.'
-            : 'Database mode: progress and posts are saved in PostgreSQL.'
-        "
-      >
-        <span class="mode__dot" aria-hidden="true"></span>
-        {{ dataSource === 'demo' ? 'Demo mode' : 'Database mode' }}
-      </span>
     </div>
   </header>
 </template>
@@ -65,6 +63,8 @@ defineProps<{ clubName?: string | undefined; dataSource?: DataSource | undefined
 }
 
 .brand {
+  color: inherit;
+  text-decoration: none;
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -87,45 +87,51 @@ defineProps<{ clubName?: string | undefined; dataSource?: DataSource | undefined
   font-weight: 700;
 }
 
-.brand__club {
-  color: var(--ink-3);
+.account {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.account__link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.2rem 0.6rem 0.2rem 0.2rem;
+  border-radius: 999px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.account__link:hover,
+.account__link.router-link-active {
+  background: var(--surface-2);
+}
+
+.account__name {
+  font-weight: 600;
   font-size: 0.9375rem;
-  padding-left: 0.6rem;
-  border-left: 1px solid var(--line);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 12rem;
 }
 
-.mode {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.25rem 0.7rem;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink-2);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.mode__dot {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: var(--veil);
-}
-
-.mode--db .mode__dot {
-  background: var(--accent);
+.account__logout {
+  min-height: 36px;
+  font-size: 0.875rem;
 }
 
 @media (max-width: 520px) {
-  .brand__club {
+  .account__name {
     display: none;
+  }
+
+  .account__link {
+    padding-right: 0.2rem;
   }
 }
 </style>

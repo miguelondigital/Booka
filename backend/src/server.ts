@@ -7,9 +7,7 @@ const config = loadConfig()
 const app = createApp(config)
 
 const server = app.listen(config.port, () => {
-  console.log(
-    `Booka API listening on http://localhost:${config.port} (DATA_SOURCE=${config.dataSource})`,
-  )
+  console.log(`Booka listening on http://localhost:${config.port}`)
 })
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

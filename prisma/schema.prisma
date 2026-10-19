@@ -1,5 +1,6 @@
-// Booka MVP data model: one club, one active book, ordered checkpoints,
-// member progress, and checkpoint-stamped threads and replies.
+// Booka data model: members join clubs; each club reads one book at a time
+// (earlier books stay browsable); books have ordered checkpoints; threads and
+// replies are stamped with checkpoints and filtered by members' progress.
 
 generator client {
   provider            = "prisma-client"
@@ -13,23 +14,32 @@ datasource db {
 }
 
 model Club {
-  id           String       @id @default(cuid())
-  name         String
-  // Club 1-to-1 active Book.
-  activeBookId String       @unique
-  activeBook   Book         @relation(fields: [activeBookId], references: [id])
-  memberships  Membership[]
-  threads      Thread[]
-  createdAt    DateTime     @default(now())
+  id          String       @id @default(cuid())
+  name        String
+  ownerId     String
+  owner       Member       @relation("OwnedClubs", fields: [ownerId], references: [id])
+  // Shareable join code. Resetting it makes old invite links stop working.
+  inviteCode  String       @unique
+  books       Book[]
+  memberships Membership[]
+  blocks      ClubBlock[]
+  createdAt   DateTime     @default(now())
 }
 
+// A book as read by one club. The club's current book is the one started
+// most recently; earlier books stay browsable with their discussion.
 model Book {
   id          String       @id @default(cuid())
+  clubId      String
+  club        Club         @relation(fields: [clubId], references: [id], onDelete: Cascade)
   title       String
   author      String
-  club        Club?
+  startedAt   DateTime     @default(now())
   checkpoints Checkpoint[]
   progress    Progress[]
+  threads     Thread[]
+
+  @@index([clubId, startedAt])
 }
 
 model Checkpoint {
@@ -46,13 +56,36 @@ model Checkpoint {
   @@unique([bookId, index])
 }
 
+// A member is a user account. Deleted accounts are anonymised rather than
+// removed so their posts keep the conversation intact ("Former member").
 model Member {
-  id          String       @id @default(cuid())
-  name        String
-  memberships Membership[]
-  progress    Progress[]
-  threads     Thread[]
-  posts       Post[]
+  id           String       @id @default(cuid())
+  name         String
+  // Stored lower-cased.
+  email        String       @unique
+  // scrypt hash; null means the account cannot sign in with a password.
+  passwordHash String?
+  createdAt    DateTime     @default(now())
+  deletedAt    DateTime?
+  sessions     Session[]
+  memberships  Membership[]
+  ownedClubs   Club[]       @relation("OwnedClubs")
+  blocks       ClubBlock[]
+  progress     Progress[]
+  threads      Thread[]
+  posts        Post[]
+}
+
+// A signed-in browser. The cookie holds a random token; only its SHA-256
+// hash is stored, so a database leak does not leak usable sessions.
+model Session {
+  id        String   @id
+  memberId  String
+  member    Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([memberId])
 }
 
 // Member-to-Club through membership.
@@ -64,16 +97,30 @@ model Membership {
   joinedAt DateTime @default(now())
 
   @@id([memberId, clubId])
+  @@index([clubId])
 }
 
-// Member-to-Book through progress: the member's current checkpoint.
+// A member the owner removed. Blocked members cannot rejoin through the
+// invite link until the owner lifts the block.
+model ClubBlock {
+  clubId    String
+  club      Club     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  memberId  String
+  member    Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([clubId, memberId])
+}
+
+// Member-to-Book through progress: the member's current checkpoint in that
+// book. Kept when a member leaves, so rejoining restores it.
 model Progress {
   memberId     String
   member       Member     @relation(fields: [memberId], references: [id], onDelete: Cascade)
   bookId       String
   book         Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
   checkpointId String
-  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id])
+  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
   updatedAt    DateTime   @updatedAt
 
   @@id([memberId, bookId])
@@ -82,10 +129,10 @@ model Progress {
 // A thread's checkpoint is stamped from the author's progress at creation.
 model Thread {
   id           String     @id @default(cuid())
-  clubId       String
-  club         Club       @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  bookId       String
+  book         Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
   checkpointId String
-  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id])
+  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
   authorId     String
   author       Member     @relation(fields: [authorId], references: [id])
   title        String
@@ -93,7 +140,7 @@ model Thread {
   createdAt    DateTime   @default(now())
   posts        Post[]
 
-  @@index([clubId])
+  @@index([bookId])
 }
 
 // A reply inside a thread, stamped from the author's progress at creation.
@@ -102,7 +149,7 @@ model Post {
   threadId     String
   thread       Thread     @relation(fields: [threadId], references: [id], onDelete: Cascade)
   checkpointId String
-  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id])
+  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
   authorId     String
   author       Member     @relation(fields: [authorId], references: [id])
   body         String

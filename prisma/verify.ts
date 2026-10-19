@@ -1,15 +1,15 @@
 /**
  * Database verification: `npm run db:verify`.
  *
- * Confirms PostgreSQL is reachable, migrations are applied, the demo seed is
- * present and consistent, and the visibility rule holds for every member at
- * their current checkpoint. Exits non-zero on any failure.
+ * Confirms PostgreSQL is reachable, migrations are applied, the seed is
+ * present and consistent, and — through the same service the API uses — that
+ * no member's discussion of any book (current or past) contains anything
+ * beyond their checkpoint. Exits non-zero on any failure.
  */
 import '../backend/src/env.js'
 import { disconnectPrisma, getPrisma } from '../backend/src/db/client.js'
-import { createPrismaRepository } from '../backend/src/repositories/prismaRepository.js'
-import { demoFixtures } from '../shared/fixtures.js'
-import { buildVisibleFeed } from '../shared/visibility.js'
+import { createBookService } from '../backend/src/services/books.js'
+import { demoClubs } from '../shared/fixtures.js'
 
 const databaseUrl = process.env.DATABASE_URL
 if (!databaseUrl) {
@@ -18,6 +18,7 @@ if (!databaseUrl) {
 }
 
 const prisma = getPrisma(databaseUrl)
+const books = createBookService(prisma)
 let failures = 0
 
 function check(label: string, ok: boolean, detail = '') {
@@ -33,65 +34,73 @@ try {
     SELECT count(*) AS count FROM "_prisma_migrations" WHERE finished_at IS NOT NULL`
   check('Migrations applied', applied > 0n, `${applied} migration(s)`)
 
-  const snapshot = await createPrismaRepository(prisma).getSnapshot()
-  const { checkpoints, members, threads } = snapshot
+  const demoIds = demoClubs.map((demo) => demo.club.id)
+  const seeded = await prisma.club.count({ where: { id: { in: demoIds } } })
+  check('Demo clubs present', seeded === demoIds.length, `${seeded}/${demoIds.length}`)
 
-  check(
-    'Club with an active book',
-    Boolean(snapshot.club.id && snapshot.book.id),
-    `${snapshot.club.name} → ${snapshot.book.title}`,
-  )
+  const inverted = await prisma.$queryRaw<{ count: bigint }[]>`
+    SELECT count(*) AS count FROM "Post" p
+    JOIN "Thread" t ON t.id = p."threadId"
+    JOIN "Checkpoint" pc ON pc.id = p."checkpointId"
+    JOIN "Checkpoint" tc ON tc.id = t."checkpointId"
+    WHERE pc.index < tc.index`
+  check('No reply is stamped before its thread checkpoint', inverted[0]?.count === 0n)
 
-  const indexesContiguous = checkpoints.every(
-    (checkpoint, position) => checkpoint.index === position,
-  )
-  check(
-    'Book has 6–8 ordered checkpoints (indexes 0..n-1)',
-    checkpoints.length >= 6 && checkpoints.length <= 8 && indexesContiguous,
-    checkpoints.map((checkpoint) => `${checkpoint.index}:${checkpoint.label}`).join(', '),
-  )
+  const crossBook = await prisma.$queryRaw<{ count: bigint }[]>`
+    SELECT count(*) AS count FROM "Thread" t
+    JOIN "Checkpoint" c ON c.id = t."checkpointId"
+    WHERE c."bookId" <> t."bookId"`
+  check('Every thread is stamped with a checkpoint of its own book', crossBook[0]?.count === 0n)
 
-  const memberIds = new Set(members.map((member) => member.id))
-  check(
-    'Seeded demo members belong to the club with progress',
-    demoFixtures.members.every((member) => memberIds.has(member.id)),
-    members.map((member) => `${member.name}@${member.checkpointIndex}`).join(', '),
-  )
-
-  const threadIds = new Set(threads.map((thread) => thread.id))
-  const replyIds = new Set(threads.flatMap((thread) => thread.replies.map((reply) => reply.id)))
-  check(
-    'Seeded threads and replies are present',
-    demoFixtures.threads.every(
-      (thread) =>
-        threadIds.has(thread.id) && thread.replies.every((reply) => replyIds.has(reply.id)),
-    ),
-    `${threads.length} threads, ${replyIds.size} replies in database`,
-  )
-
-  const inverted = threads.flatMap((thread) =>
-    thread.replies.filter((reply) => reply.checkpointIndex < thread.checkpointIndex),
-  )
-  check('No reply is stamped before its thread checkpoint', inverted.length === 0)
-
-  console.log('\nVisibility at each member’s current checkpoint:')
-  const rows = members.map((member) => {
-    const feed = buildVisibleFeed(threads, member.checkpointIndex)
-    const leaked = feed.some(
-      (thread) =>
-        thread.checkpointIndex > member.checkpointIndex ||
-        thread.replies.some((reply) => reply.checkpointIndex > member.checkpointIndex),
-    )
-    if (leaked) failures++
-    return {
-      member: member.name,
-      checkpoint: `${member.checkpointIndex} (${checkpoints[member.checkpointIndex]?.label ?? '?'})`,
-      visibleThreads: feed.length,
-      visibleReplies: feed.reduce((sum, thread) => sum + thread.replies.length, 0),
-      hiddenReplies: feed.reduce((sum, thread) => sum + thread.hiddenReplyCount, 0),
-      leaks: leaked ? 'YES' : 'none',
-    }
+  const accounts = await prisma.member.count({
+    where: { passwordHash: { not: null }, deletedAt: null },
   })
+  check('Accounts that can sign in', true, String(accounts))
+
+  const clubs = await prisma.club.findMany({
+    orderBy: { createdAt: 'asc' },
+    include: {
+      books: {
+        orderBy: { startedAt: 'desc' },
+        include: { checkpoints: { orderBy: { index: 'asc' } } },
+      },
+      memberships: { include: { member: { select: { id: true, name: true } } } },
+    },
+  })
+
+  const rows = []
+  for (const club of clubs) {
+    const ok = club.books.every(
+      (book) =>
+        book.checkpoints.length >= 2 &&
+        book.checkpoints.every((checkpoint, position) => checkpoint.index === position),
+    )
+    check(`${club.name}: books have ordered checkpoints`, ok, `${club.books.length} book(s)`)
+
+    for (const book of club.books) {
+      for (const { member } of club.memberships) {
+        const discussion = await books.getDiscussion(club.id, book.id, member.id)
+        const index = discussion.readerCheckpointIndex
+        const leaked = discussion.threads.some(
+          (thread) =>
+            thread.checkpointIndex > index ||
+            thread.replies.some((reply) => reply.checkpointIndex > index),
+        )
+        if (leaked) failures++
+        rows.push({
+          club: club.name,
+          book: `${book.title}${book === club.books[0] ? ' (current)' : ''}`,
+          member: member.name,
+          checkpoint: book.checkpoints[index]?.label ?? '?',
+          threads: discussion.threads.length,
+          replies: discussion.threads.reduce((sum, thread) => sum + thread.replies.length, 0),
+          hidden: discussion.threads.reduce((sum, thread) => sum + thread.hiddenReplyCount, 0),
+          leaks: leaked ? 'YES' : 'none',
+        })
+      }
+    }
+  }
+  console.log('\nServer-filtered discussion for every member of every book:')
   console.table(rows)
 } catch (error) {
   failures++

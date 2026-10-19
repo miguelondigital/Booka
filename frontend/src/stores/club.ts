@@ -1,58 +1,37 @@
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { Checkpoint, ClubSnapshot, Member, NewReplyInput, NewThreadInput } from '@shared/types'
-import { buildVisibleFeed } from '@shared/visibility'
-import { connectRepository, type ClubRepository, type Connection } from '@/data/repository'
+import type {
+  BookOverview,
+  ClubDetail,
+  Discussion,
+  Member,
+  NewReplyInput,
+  NewThreadInput,
+} from '@shared/types'
+import { api } from '@/data/api'
 
-const ACTIVE_MEMBER_KEY = 'booka.activeMemberId'
-
-function readActiveMemberId(): string | null {
-  try {
-    return localStorage.getItem(ACTIVE_MEMBER_KEY)
-  } catch {
-    return null
-  }
-}
-
-function saveActiveMemberId(memberId: string) {
-  try {
-    localStorage.setItem(ACTIVE_MEMBER_KEY, memberId)
-  } catch {
-    // Remembering the selected member is a convenience only.
-  }
-}
-
+/** The club page: one book of one club, its members' progress and discussion. */
 export const useClubStore = defineStore('club', () => {
   const status = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const loadError = ref<string | null>(null)
-  const repository = shallowRef<ClubRepository | null>(null)
-  // The unfiltered discussion is intentionally NOT returned from the store:
-  // components can only reach threads through `visibleFeed`.
-  const snapshot = ref<ClubSnapshot | null>(null)
-  const activeMemberId = ref<string | null>(readActiveMemberId())
+  const detail = ref<ClubDetail | null>(null)
+  const overview = ref<BookOverview | null>(null)
+  /** Server-filtered for the signed-in member. Never contains hidden content. */
+  const discussion = ref<Discussion | null>(null)
+  const updatingProgress = ref(false)
 
-  const dataSource = computed(() => repository.value?.dataSource ?? 'demo')
-  const club = computed(() => snapshot.value?.club ?? null)
-  const book = computed(() => snapshot.value?.book ?? null)
-  const checkpoints = computed<Checkpoint[]>(() => snapshot.value?.checkpoints ?? [])
-  const members = computed<Member[]>(() => snapshot.value?.members ?? [])
-
-  const activeMember = computed<Member | null>(
-    () =>
-      members.value.find((member) => member.id === activeMemberId.value) ??
-      members.value[0] ??
-      null,
+  const club = computed(() => overview.value?.club ?? detail.value?.club ?? null)
+  const book = computed(() => overview.value?.book ?? null)
+  const books = computed(() => detail.value?.books ?? [])
+  const currentBook = computed(() => books.value.find((candidate) => candidate.isCurrent) ?? null)
+  const isOwner = computed(() => detail.value?.isOwner ?? false)
+  const checkpoints = computed(() => overview.value?.checkpoints ?? [])
+  const members = computed<Member[]>(() => overview.value?.members ?? [])
+  const me = computed(() => overview.value?.me ?? null)
+  const myCheckpoint = computed(() =>
+    me.value ? checkpoints.value[me.value.checkpointIndex] : undefined,
   )
-  const activeCheckpoint = computed(() =>
-    activeMember.value ? checkpoints.value[activeMember.value.checkpointIndex] : undefined,
-  )
-
-  /** The discussion as the active member may see it — the only feed the UI renders. */
-  const visibleFeed = computed(() =>
-    snapshot.value && activeMember.value
-      ? buildVisibleFeed(snapshot.value.threads, activeMember.value.checkpointIndex)
-      : [],
-  )
+  const feed = computed(() => discussion.value?.threads ?? [])
 
   function memberById(memberId: string): Member | undefined {
     return members.value.find((member) => member.id === memberId)
@@ -62,89 +41,112 @@ export const useClubStore = defineStore('club', () => {
     return checkpoints.value[index]?.label ?? `Checkpoint ${index}`
   }
 
-  function requireReady() {
-    const member = activeMember.value
-    if (!repository.value || !snapshot.value || !member)
-      throw new Error('The club is still loading.')
-    return { repository: repository.value, snapshot: snapshot.value, member }
-  }
+  let loadRequest = 0
 
-  async function init(connect: () => Promise<Connection> = connectRepository) {
+  /** Load a club and one of its books (the current book when bookId is omitted). */
+  async function load(clubId: string, bookId?: string) {
+    const request = ++loadRequest
     status.value = 'loading'
     loadError.value = null
     try {
-      const connection = await connect()
-      repository.value = connection.repository
-      snapshot.value = connection.snapshot
+      const nextDetail = await api.clubDetail(clubId)
+      const targetId = bookId ?? nextDetail.books[0]?.id
+      if (!targetId) throw new Error('This club has no books yet.')
+      const [nextOverview, nextDiscussion] = await Promise.all([
+        api.book(clubId, targetId),
+        api.discussion(clubId, targetId),
+      ])
+      if (request !== loadRequest) return
+      detail.value = nextDetail
+      overview.value = nextOverview
+      discussion.value = nextDiscussion
       status.value = 'ready'
     } catch (error) {
+      if (request !== loadRequest) return
       loadError.value = error instanceof Error ? error.message : String(error)
       status.value = 'error'
     }
   }
 
-  function selectMember(memberId: string) {
-    if (!memberById(memberId)) return
-    activeMemberId.value = memberId
-    saveActiveMemberId(memberId)
+  function requireReady() {
+    if (!overview.value || !discussion.value) throw new Error('The club is still loading.')
+    return {
+      clubId: overview.value.club.id,
+      bookId: overview.value.book.id,
+      current: overview.value,
+      currentDiscussion: discussion.value,
+    }
   }
 
   let progressRequest = 0
 
-  /** Move the active member's checkpoint. The feed updates immediately. */
+  /**
+   * Move the signed-in member's checkpoint in this book. The server answers
+   * with the newly visible discussion, which replaces the feed in one step.
+   */
   async function setCheckpoint(checkpointIndex: number) {
-    const { repository: repo, member } = requireReady()
-    const previous = member.checkpointIndex
+    const { clubId, bookId, current } = requireReady()
     const request = ++progressRequest
-    member.checkpointIndex = checkpointIndex
+    updatingProgress.value = true
     try {
-      const updated = await repo.updateProgress(member.id, checkpointIndex)
-      if (request === progressRequest) member.checkpointIndex = updated.checkpointIndex
-    } catch (error) {
-      if (request === progressRequest) member.checkpointIndex = previous
-      throw error
+      const result = await api.updateProgress(clubId, bookId, checkpointIndex)
+      if (request !== progressRequest) return
+      current.me = result.me
+      const entry = current.members.find((member) => member.id === result.me.id)
+      if (entry) entry.checkpointIndex = result.me.checkpointIndex
+      discussion.value = result.discussion
+    } finally {
+      if (request === progressRequest) updatingProgress.value = false
     }
   }
 
   async function createThread(input: NewThreadInput) {
-    const { repository: repo, snapshot: current, member } = requireReady()
-    const thread = await repo.createThread(member.id, input)
-    current.threads.push(thread)
+    const { clubId, bookId, currentDiscussion } = requireReady()
+    const thread = await api.createThread(clubId, bookId, input)
+    currentDiscussion.threads.unshift(thread)
     return thread
   }
 
   async function reply(threadId: string, input: NewReplyInput) {
-    const { repository: repo, snapshot: current, member } = requireReady()
-    const created = await repo.createReply(member.id, threadId, input)
-    current.threads.find((thread) => thread.id === threadId)?.replies.push(created)
+    const { clubId, bookId, currentDiscussion } = requireReady()
+    const created = await api.createReply(clubId, bookId, threadId, input)
+    const thread = currentDiscussion.threads.find((candidate) => candidate.id === threadId)
+    if (thread) {
+      thread.replies.push(created)
+      thread.lastActivityAt = created.createdAt
+    }
     return created
   }
 
-  /** Demo mode: drop browser-saved progress and posts, back to the fixtures. */
-  async function resetDemo() {
-    const { repository: repo } = requireReady()
-    await repo.reset?.()
-    snapshot.value = await repo.load()
+  function $reset() {
+    loadRequest++
+    status.value = 'idle'
+    loadError.value = null
+    detail.value = null
+    overview.value = null
+    discussion.value = null
   }
 
   return {
     status,
     loadError,
-    dataSource,
     club,
     book,
+    books,
+    currentBook,
+    isOwner,
     checkpoints,
     members,
-    activeMember,
-    activeCheckpoint,
-    visibleFeed,
+    me,
+    myCheckpoint,
+    feed,
+    updatingProgress,
     memberById,
     checkpointLabel,
-    init,
-    selectMember,
+    load,
     setCheckpoint,
     createThread,
     reply,
-    resetDemo,
+    $reset,
   }
 })

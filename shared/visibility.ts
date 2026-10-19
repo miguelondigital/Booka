@@ -1,4 +1,6 @@
-import type { Reply, Thread } from './types.js'
+import type { Thread, VisibleThread } from './types.js'
+
+export type { VisibleThread }
 
 /**
  * The visibility rule — the single source of truth for spoiler filtering.
@@ -9,30 +11,12 @@ import type { Reply, Thread } from './types.js'
  * discussion must go through `buildVisibleFeed` (or this function) rather
  * than re-implementing the comparison.
  *
- * MVP limitation: in the prototype this filter runs in the browser on data
- * the client has already received, and progress is self-reported. It is a
- * product demonstration, NOT a security boundary. A production version must
- * apply this rule on the server before returning any post data.
+ * Enforcement: the API applies this on the server before any discussion
+ * leaves it (see backend/src/services/discussion.ts). Clients only ever
+ * receive the filtered result, so hidden content never reaches the browser.
  */
 export function isVisibleAt(itemCheckpointIndex: number, readerCheckpointIndex: number): boolean {
   return itemCheckpointIndex <= readerCheckpointIndex
-}
-
-/**
- * A thread as a reader at a given checkpoint may see it. Hidden replies are
- * reduced to a count: no body, author, timestamp or other preview survives.
- */
-export interface VisibleThread {
-  id: string
-  authorId: string
-  title: string
-  body: string
-  checkpointIndex: number
-  createdAt: string
-  replies: Reply[]
-  hiddenReplyCount: number
-  /** Latest timestamp among the thread and its *visible* replies only. */
-  lastActivityAt: string
 }
 
 export const HIDDEN_REPLIES_MESSAGE = 'Some replies are hidden until you reach a later checkpoint.'

@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Book, Checkpoint, Club, Member } from '@shared/types'
+import type { BookSummary, Checkpoint, Club, Member } from '@shared/types'
 import MemberAvatar from './MemberAvatar.vue'
 
 const props = defineProps<{
   club: Club
-  book: Book
+  book: BookSummary
   checkpoints: Checkpoint[]
   members: Member[]
-  activeMember: Member
+  me: Member
+  busy?: boolean
   error?: string | null
 }>()
 
 const emit = defineEmits<{ change: [checkpointIndex: number] }>()
 
-const current = computed(() => props.activeMember.checkpointIndex)
+const current = computed(() => props.me.checkpointIndex)
 const last = computed(() => props.checkpoints.length - 1)
 
 const membersAt = (index: number) =>
@@ -27,7 +28,7 @@ function stepState(index: number) {
 }
 
 function move(index: number) {
-  if (index < 0 || index > last.value || index === current.value) return
+  if (props.busy || index < 0 || index > last.value || index === current.value) return
   emit('change', index)
 }
 </script>
@@ -39,7 +40,7 @@ function move(index: number) {
         <span>{{ book.title }}</span>
       </div>
       <div class="book__meta">
-        <p class="eyebrow">{{ club.name }} is reading</p>
+        <p class="eyebrow">{{ book.isCurrent ? 'Now reading' : 'Past book' }}</p>
         <h2 class="book__title">{{ book.title }}</h2>
         <p class="book__author">{{ book.author }}</p>
       </div>
@@ -47,17 +48,15 @@ function move(index: number) {
 
     <div class="controls">
       <div>
-        <h3 id="progress-heading" class="controls__heading">
-          {{ activeMember.name }}'s checkpoint
-        </h3>
+        <h3 id="progress-heading" class="controls__heading">Your checkpoint</h3>
         <p class="controls__current">{{ checkpoints[current]?.label }}</p>
       </div>
       <div class="controls__buttons">
         <button
           type="button"
           class="btn btn-ghost step-btn"
-          :disabled="current <= 0"
-          :aria-label="`Move ${activeMember.name} back one checkpoint`"
+          :disabled="busy || current <= 0"
+          aria-label="Move back one checkpoint"
           @click="move(current - 1)"
         >
           <svg
@@ -77,8 +76,8 @@ function move(index: number) {
         <button
           type="button"
           class="btn btn-ghost step-btn"
-          :disabled="current >= last"
-          :aria-label="`Move ${activeMember.name} forward one checkpoint`"
+          :disabled="busy || current >= last"
+          aria-label="Move forward one checkpoint"
           @click="move(current + 1)"
         >
           <svg
@@ -98,14 +97,14 @@ function move(index: number) {
       </div>
     </div>
 
-    <ol class="steps" aria-label="Book checkpoints">
+    <ol class="steps" :class="{ 'steps--busy': busy }" aria-label="Book checkpoints">
       <li v-for="checkpoint in checkpoints" :key="checkpoint.id">
         <button
           type="button"
           class="step"
           :class="`step--${stepState(checkpoint.index)}`"
           :aria-current="checkpoint.index === current ? 'step' : undefined"
-          :aria-label="`${checkpoint.label}${checkpoint.index === current ? ' (current)' : ''}. Set ${activeMember.name}'s checkpoint here.`"
+          :aria-label="`${checkpoint.label}${checkpoint.index === current ? ' (current)' : ''}. Set your checkpoint here.`"
           @click="move(checkpoint.index)"
         >
           <span class="step__marker" aria-hidden="true">
@@ -139,9 +138,7 @@ function move(index: number) {
     </ol>
 
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-    <p class="hint">
-      Tap a checkpoint to update {{ activeMember.name }}'s progress. Discussion unlocks as you read.
-    </p>
+    <p class="hint">Tap a checkpoint to update your progress. Discussion unlocks as you read.</p>
   </section>
 </template>
 
@@ -310,6 +307,11 @@ li:not(:last-child) .step--read::after {
 
 .step__members > * + * {
   margin-left: -0.35rem;
+}
+
+.steps--busy {
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 .hint {
